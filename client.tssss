@@ -1,0 +1,267 @@
+const programa = pg.program!;
+const owner = pg.wallet.publicKey;
+
+const nombre_negocio = "Cafe " + (Date.now() % 1000000);
+
+function dormir(ms: number) {
+  const fin = Date.now() + ms;
+  while (Date.now() < fin) {}
+  return Promise.resolve();
+}
+
+async function leer(accion: () => Promise<any>) {
+  let ultimoError: any;
+  for (let i = 0; i < 12; i++) {
+    try {
+      return await accion();
+    } catch (e) {
+      ultimoError = e;
+      await dormir(2500);
+    }
+  }
+  throw ultimoError;
+}
+
+function u16ToBytes(valor: number) {
+  const buffer = Buffer.alloc(2);
+  buffer.writeUInt16LE(valor, 0);
+  return buffer;
+}
+
+function pdaRegistro(nombre: string) {
+  return web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("registro"), Buffer.from(nombre), owner.toBuffer()],
+    programa.programId
+  )[0];
+}
+
+function pdaCliente(registro: web3.PublicKey, id: number) {
+  return web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("cliente"), registro.toBuffer(), u16ToBytes(id)],
+    programa.programId
+  )[0];
+}
+
+function pdaVenta(cliente: web3.PublicKey, sku: string) {
+  return web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("venta"), cliente.toBuffer(), Buffer.from(sku)],
+    programa.programId
+  )[0];
+}
+
+function pdaProducto(registro: web3.PublicKey, sku: string) {
+  return web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("producto"), registro.toBuffer(), Buffer.from(sku)],
+    programa.programId
+  )[0];
+}
+
+async function crearRegistro(nombre: string) {
+  const registro = pdaRegistro(nombre);
+  const tx = await programa.methods
+    .crearRegistro(nombre)
+    .accounts({ owner: owner, registro: registro })
+    .rpc();
+  console.log("Registro creado. tx:", tx);
+  await dormir(4000);
+}
+
+async function crearCliente(nombre: string) {
+  const registro = pdaRegistro(nombre_negocio);
+  const cuenta = await leer(() => programa.account.registro.fetch(registro));
+  const id = cuenta.idCounter + 1;
+  const cliente = pdaCliente(registro, id);
+
+  const tx = await programa.methods
+    .crearCliente(nombre)
+    .accounts({ owner: owner, registro: registro, cliente: cliente })
+    .rpc();
+  console.log(`Cliente ${nombre} creado con id ${id}. tx:`, tx);
+  await dormir(4000);
+  return id;
+}
+
+async function cambiarNombreCliente(id: number, nuevoNombre: string) {
+  const registro = pdaRegistro(nombre_negocio);
+  const cliente = pdaCliente(registro, id);
+  const tx = await programa.methods
+    .cambiarNombreCliente(id, nuevoNombre)
+    .accounts({ owner: owner, registro: registro, cliente: cliente })
+    .rpc();
+  console.log("Nombre actualizado. tx:", tx);
+  await dormir(4000);
+}
+
+async function cerrarCliente(id: number) {
+  const registro = pdaRegistro(nombre_negocio);
+  const cliente = pdaCliente(registro, id);
+  const tx = await programa.methods
+    .cerrarCliente(id)
+    .accounts({ owner: owner, registro: registro, cliente: cliente })
+    .rpc();
+  console.log("Cliente cerrado. tx:", tx);
+  await dormir(4000);
+}
+
+async function crearProducto(sku: string, categoria: string, stock: number) {
+  const registro = pdaRegistro(nombre_negocio);
+  const producto = pdaProducto(registro, sku);
+  const tx = await programa.methods
+    .crearProducto(sku, categoria, stock)
+    .accounts({ owner: owner, registro: registro, producto: producto })
+    .rpc();
+  console.log(`Producto ${sku} creado (${categoria}, stock ${stock}). tx:`, tx);
+  await dormir(4000);
+}
+
+async function reponerStock(sku: string, cantidad: number) {
+  const registro = pdaRegistro(nombre_negocio);
+  const producto = pdaProducto(registro, sku);
+  const tx = await programa.methods
+    .reponerStock(sku, cantidad)
+    .accounts({ owner: owner, registro: registro, producto: producto })
+    .rpc();
+  console.log(`Stock repuesto (+${cantidad}). tx:`, tx);
+  await dormir(4000);
+}
+
+async function verProductos() {
+  const registro = pdaRegistro(nombre_negocio);
+  await dormir(3000);
+  const todos = await leer(() => programa.account.producto.all());
+  const mios = todos.filter((p: any) => p.account.registro.equals(registro));
+  console.log("Productos en inventario:", mios.length);
+  for (const p of mios) {
+    console.log(`  ${p.account.sku} | ${p.account.categoria} | stock: ${p.account.stock}`);
+  }
+}
+
+async function registrarVenta(id: number, sku: string, descripcion: string, monto: number) {
+  const registro = pdaRegistro(nombre_negocio);
+  const cliente = pdaCliente(registro, id);
+  const venta = pdaVenta(cliente, sku);
+  const producto = pdaProducto(registro, sku);
+  const tx = await programa.methods
+    .registrarVenta(id, sku, descripcion, monto)
+    .accounts({ owner: owner, registro: registro, cliente: cliente, venta: venta, producto: producto })
+    .rpc();
+  console.log("Venta registrada. tx:", tx);
+  await dormir(4000);
+}
+
+async function cambiarMonto(id: number, sku: string, nuevoMonto: number) {
+  const registro = pdaRegistro(nombre_negocio);
+  const cliente = pdaCliente(registro, id);
+  const venta = pdaVenta(cliente, sku);
+  const tx = await programa.methods
+    .cambiarMonto(id, sku, nuevoMonto)
+    .accounts({ owner: owner, registro: registro, cliente: cliente, venta: venta })
+    .rpc();
+  console.log("Monto cambiado. tx:", tx);
+  await dormir(4000);
+}
+
+async function hacerDevolucion(id: number, sku: string) {
+  const registro = pdaRegistro(nombre_negocio);
+  const cliente = pdaCliente(registro, id);
+  const venta = pdaVenta(cliente, sku);
+  const producto = pdaProducto(registro, sku);
+  const tx = await programa.methods
+    .hacerDevolucion(id, sku)
+    .accounts({ owner: owner, registro: registro, cliente: cliente, venta: venta, producto: producto })
+    .rpc();
+  console.log("Devolucion hecha (cuenta cerrada). tx:", tx);
+  await dormir(4000);
+}
+
+async function verClientes() {
+  const registro = pdaRegistro(nombre_negocio);
+  await dormir(3000);
+  const reg = await leer(() => programa.account.registro.fetch(registro));
+  console.log("Negocio:", reg.nombreNegocio, "| ultimo id:", reg.idCounter);
+  console.log("Clientes:", reg.clientes.length);
+
+  for (const clienteKey of reg.clientes) {
+    const c = await leer(() => programa.account.cliente.fetch(clienteKey));
+    console.log(`\nCliente ${c.idCliente}: ${c.nombre} | compras: ${c.compras} | PDA: ${clienteKey.toBase58()}`);
+    for (const ventaKey of c.historial) {
+      const v = await leer(() => programa.account.venta.fetch(ventaKey));
+      console.log(`   Venta SKU ${v.sku} | ${v.descripcion} | $${v.monto}`);
+    }
+  }
+}
+
+async function esperarFallo(titulo: string, accion: () => Promise<void>) {
+  try {
+    await accion();
+    console.log(`ATENCION: ${titulo} NO fallo (se esperaba un rechazo)`);
+  } catch (e) {
+    console.log(`RECHAZADO (esperado) -> ${titulo}`);
+  }
+  await dormir(3000);
+}
+
+console.log("===== NEGOCIO:", nombre_negocio, "=====");
+
+console.log("--- PASO 1: crear registro");
+await crearRegistro(nombre_negocio);
+
+console.log("--- PASO 2: crear cliente Ana");
+await crearCliente("Ana");
+
+console.log("--- PASO 3: crear cliente Juan");
+await crearCliente("Juan");
+
+console.log("--- PASO 4: crear producto CAF01 (stock 10)");
+await crearProducto("CAF01", "Bebidas", 10);
+
+console.log("--- PASO 5: crear producto PAN01 (stock 1)");
+await crearProducto("PAN01", "Panaderia", 1);
+
+console.log("--- PASO 6: ver inventario (CAF01=10, PAN01=1)");
+await verProductos();
+
+console.log("--- PASO 7: venta de CAF01 a Ana (CAF01 baja a 9)");
+await registrarVenta(1, "CAF01", "Cafe americano", 45);
+
+console.log("--- PASO 8: venta de PAN01 a Ana (PAN01 baja a 0)");
+await registrarVenta(1, "PAN01", "Concha", 20);
+
+console.log("--- PASO 9: venta de PAN01 a Juan (DEBE FALLAR: sin stock)");
+await esperarFallo("venta sin stock", async () => {
+  await registrarVenta(2, "PAN01", "Concha", 20);
+});
+
+console.log("--- PASO 10: reponer stock de PAN01 (+5)");
+await reponerStock("PAN01", 5);
+
+console.log("--- PASO 11: venta de PAN01 a Juan (ahora si)");
+await registrarVenta(2, "PAN01", "Concha", 20);
+
+console.log("--- PASO 12: devolucion de CAF01 (regresa a 10)");
+await hacerDevolucion(1, "CAF01");
+
+console.log("--- PASO 13: ver inventario");
+await verProductos();
+
+console.log("--- PASO 14: cambiar nombre de Ana");
+await cambiarNombreCliente(1, "Ana Maria");
+
+console.log("--- PASO 15: cambiar monto de la venta de Juan");
+await cambiarMonto(2, "PAN01", 25);
+
+console.log("--- PASO 16: cerrar a Ana (DEBE FALLAR: tiene compras)");
+await esperarFallo("cerrar cliente con compras", async () => {
+  await cerrarCliente(1);
+});
+
+console.log("--- PASO 17: devolucion de PAN01 de Ana");
+await hacerDevolucion(1, "PAN01");
+
+console.log("--- PASO 18: cerrar a Ana (ahora si cierra)");
+await cerrarCliente(1);
+
+console.log("--- PASO 19: ver clientes y ventas");
+await verClientes();
+
+console.log("===== LISTO =====");

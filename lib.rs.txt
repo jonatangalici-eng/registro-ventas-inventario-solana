@@ -1,0 +1,502 @@
+use anchor_lang::prelude::*;
+declare_id!("HbwMT5JUCi36kikH7hNHdz6DfKiExdt3vYbk4Kifp8wh");
+#[program]
+pub mod registro {
+    use super::*;
+    cambio
+    pub fn crear_registro(context: Context<NuevoRegistro>, nombre_negocio: String) -> Result<()> {
+        require!(
+            !nombre_negocio.is_empty() && nombre_negocio.len() <= 30,
+            Errores::NombreInvalido
+        );
+
+        context.accounts.registro.set_inner(Registro {
+            owner: context.accounts.owner.key(),
+            nombre_negocio: nombre_negocio.clone(),
+            clientes: Vec::new(),
+            id_counter: 0,
+        });
+msg!("Registro: {} creado exitosamente!", nombre_negocio);
+        Ok(())
+    }
+
+    pub fn crear_cliente(context: Context<NuevoCliente>, nombre: String) -> Result<()> {
+        require!(
+            !nombre.is_empty() && nombre.len() <= 30,
+            Errores::NombreInvalido
+        );
+        require!(
+            context.accounts.registro.clientes.len() < 10,
+            Errores::RegistroLleno
+        );
+
+        let cliente_key = context.accounts.cliente.key();
+        let registro = &mut context.accounts.registro;
+        let id_cliente = registro.id_counter + 1;
+        registro.id_counter = id_cliente;
+        registro.clientes.push(cliente_key);
+
+        context.accounts.cliente.set_inner(Cliente {
+            id_cliente,
+            nombre: nombre.clone(),
+            compras: 0,
+            historial: Vec::new(),
+        });
+
+        msg!("Cliente {} creado con id: {}", nombre, id_cliente);
+        Ok(())
+    }
+cambio
+    pub fn cambiar_nombre_cliente(
+        context: Context<ModificarCliente>,
+        _id_cliente: u16,
+        nuevo_nombre: String,
+    ) -> Result<()> {
+        require!(
+            !nuevo_nombre.is_empty() && nuevo_nombre.len() <= 30,
+            Errores::NombreInvalido
+        );
+
+        let cliente = &mut context.accounts.cliente;
+        let viejo_nombre = cliente.nombre.clone();
+        cliente.nombre = nuevo_nombre.clone();
+
+        msg!(
+            "Cliente con id: {} cambio de nombre: {} -> {}",
+            cliente.id_cliente,
+            viejo_nombre,
+            nuevo_nombre
+        );
+        Ok(())
+    }
+ CAMBIO
+
+    pub fn cerrar_cliente(context: Context<CerrarCliente>, _id_cliente: u16) -> Result<()> {
+        let cliente_key = context.accounts.cliente.key();
+
+        require!(
+            context.accounts.cliente.compras == 0 && context.accounts.cliente.historial.is_empty(),
+            Errores::ClienteConCompras
+        );
+
+        let registro = &mut context.accounts.registro;
+        registro.clientes.retain(|&k| k != cliente_key);
+
+        msg!(
+            "Cliente con id: {} cerrado, su renta regreso al owner",
+            context.accounts.cliente.id_cliente
+        );
+        Ok(())
+        }
+ CAMBIO
+    pub fn crear_producto(
+        context: Context<NuevoProducto>,
+        sku: String,
+        categoria: String,
+        stock: u32,
+    ) -> Result<()> {
+        require!(!sku.is_empty() && sku.len() <= 10, Errores::SkuInvalido);
+        require!(
+            !categoria.is_empty() && categoria.len() <= 20,
+            Errores::CategoriaInvalida
+        );
+        let registro_key = context.accounts.registro.key();
+
+        context.accounts.producto.set_inner(Producto {
+            registro: registro_key,
+            sku: sku.clone(),
+            categoria: categoria.clone(),
+            stock,
+        });
+
+        msg!(
+            "Producto {} creado. Categoria: {}, stock inicial: {}",
+            sku,
+            categoria,
+            stock
+        );
+        Ok(())
+    }
+
+    pub fn reponer_stock(
+        context: Context<ModificarProducto>,
+        sku: String,
+        cantidad: u32,
+    ) -> Result<()> {
+        require!(cantidad > 0, Errores::CantidadInvalida);
+
+        let producto = &mut context.accounts.producto;
+        let viejo_stock = producto.stock;
+        producto.stock = viejo_stock
+            .checked_add(cantidad)
+            .ok_or(Errores::CantidadInvalida)?;
+
+        msg!(
+            "Stock del producto {} paso de: {}, a: {}",
+            sku,
+            viejo_stock,
+            producto.stock
+        );
+        Ok(())
+    }
+
+    pub fn registrar_venta(
+        context: Context<NuevaVenta>,
+        _id_cliente: u16,
+        sku: String,
+        descripcion: String,
+        monto: u32,
+    ) -> Result<()> {
+        require!(!sku.is_empty() && sku.len() <= 10, Errores::SkuInvalido);
+        require!(descripcion.len() <= 50, Errores::DescripcionInvalida);
+        require!(monto > 0, Errores::MontoInvalido);
+        require!(
+            context.accounts.cliente.historial.len() < 10,
+            Errores::HistorialLleno
+        );
+        require!(context.accounts.producto.stock > 0, Errores::SinStock);
+        context.accounts.producto.stock -= 1;
+
+        context.accounts.venta.set_inner(Venta {
+            sku,
+            descripcion,
+            monto,
+        });
+
+        let venta_key = context.accounts.venta.key();
+        let cliente = &mut context.accounts.cliente;
+
+        cliente.historial.push(venta_key);
+        cliente.compras += 1;
+
+        msg!(
+            "Venta registrada para el cliente con id: {}",
+            cliente.id_cliente
+        );
+        Ok(())
+    }
+
+    pub fn hacer_devolucion(
+        context: Context<EliminarVenta>,
+        _id_cliente: u16,
+        sku: String,
+    ) -> Result<()> {
+        let venta_key = context.accounts.venta.key();
+        let cliente = &mut context.accounts.cliente;
+
+        require!(cliente.historial.contains(&venta_key), Errores::NoSKU);
+
+        cliente.historial.retain(|&k| k != venta_key);
+        cliente.compras -= 1;
+
+        context.accounts.producto.stock += 1;
+
+        msg!(
+            "Venta con sku: {}, devuelta por el cliente con id: {}",
+            sku,
+            cliente.id_cliente
+        );
+        Ok(())
+    }
+
+    pub fn cambiar_monto(
+        context: Context<ModificarVenta>,
+        _id_cliente: u16,
+        sku: String,
+        nuevo_monto: u32,
+    ) -> Result<()> {
+        require!(nuevo_monto > 0, Errores::MontoInvalido);
+
+        let venta = &mut context.accounts.venta;
+        let viejo_monto = venta.monto;
+        venta.monto = nuevo_monto;
+
+        msg!(
+            "El monto de la venta con sku: {}, paso de: {}, a: {}",
+            sku,
+            viejo_monto,
+            nuevo_monto
+        );
+        Ok(())
+    }
+}
+
+#[error_code]
+pub enum Errores {
+    #[msg("Error, no eres el owner del registro")]
+    NoOwner,
+    #[msg("Error, la venta no esta en el historial del cliente")]
+    NoSKU,
+    #[msg("Error, el nombre esta vacio o pasa de 30 caracteres")]
+    NombreInvalido,
+    #[msg("Error, el registro ya tiene el maximo de 10 clientes")]
+    RegistroLleno,
+    #[msg("Error, el cliente ya tiene el maximo de 10 ventas")]
+    HistorialLleno,
+    #[msg("Error, el SKU esta vacio o pasa de 10 caracteres")]
+    SkuInvalido,
+    #[msg("Error, la descripcion pasa de 50 caracteres")]
+    DescripcionInvalida,
+    #[msg("Error, el monto debe ser mayor a 0")]
+    MontoInvalido,
+    #[msg("Error, no se puede cerrar un cliente que tiene compras")]
+    ClienteConCompras,
+    #[msg("Error, el producto no tiene stock disponible")]
+    SinStock,
+    #[msg("Error, la categoria esta vacia o pasa de 20 caracteres")]
+    CategoriaInvalida,
+    #[msg("Error, la cantidad debe ser mayor a 0")]
+    CantidadInvalida,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct Registro {
+    pub owner: Pubkey,
+
+    #[max_len(30)]
+    nombre_negocio: String,
+
+    #[max_len(10)]
+    clientes: Vec<Pubkey>,
+
+    id_counter: u16,
+}
+
+#[account]
+#[derive(InitSpace, PartialEq)]
+pub struct Cliente {
+    id_cliente: u16,
+
+    #[max_len(30)]
+    nombre: String,
+
+    compras: u16,
+
+    #[max_len(10)]
+    historial: Vec<Pubkey>,
+}
+
+#[account]
+#[derive(InitSpace, PartialEq)]
+pub struct Venta {
+    #[max_len(10)]
+    sku: String,
+
+    #[max_len(50)]
+    descripcion: String,
+
+    monto: u32,
+}
+
+#[account]
+#[derive(InitSpace, PartialEq)]
+pub struct Producto {
+    registro: Pubkey,
+
+    #[max_len(10)]
+    sku: String,
+
+    #[max_len(20)]
+    categoria: String,
+
+    stock: u32,
+}
+
+#[derive(Accounts)]
+#[instruction(nombre_negocio: String)]
+pub struct NuevoRegistro<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(
+        init,
+        payer = owner,
+        space = Registro::INIT_SPACE + 8,
+        seeds = [b"registro", nombre_negocio.as_bytes(), owner.key().as_ref()],
+        bump
+    )]
+    pub registro: Account<'info, Registro>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(sku: String)]
+pub struct NuevoProducto<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(has_one = owner @ Errores::NoOwner)]
+    pub registro: Account<'info, Registro>,
+
+    #[account(
+        init,
+        payer = owner,
+        space = Producto::INIT_SPACE + 8,
+        seeds = [b"producto", registro.key().as_ref(), sku.as_bytes()],
+        bump
+    )]
+    pub producto: Account<'info, Producto>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(sku: String)]
+pub struct ModificarProducto<'info> {
+    pub owner: Signer<'info>,
+
+    #[account(has_one = owner @ Errores::NoOwner)]
+    pub registro: Account<'info, Registro>,
+
+    #[account(
+        mut,
+        seeds = [b"producto", registro.key().as_ref(), sku.as_bytes()],
+        bump
+    )]
+    pub producto: Account<'info, Producto>,
+}
+
+#[derive(Accounts)]
+pub struct NuevoCliente<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(mut, has_one = owner @ Errores::NoOwner)]
+    pub registro: Account<'info, Registro>,
+
+    #[account(
+        init,
+        payer = owner,
+        space = Cliente::INIT_SPACE + 8,
+        seeds = [b"cliente", registro.key().as_ref(), (registro.id_counter + 1).to_le_bytes().as_ref()],
+        bump
+    )]
+    pub cliente: Account<'info, Cliente>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(id_cliente: u16)]
+pub struct ModificarCliente<'info> {
+    pub owner: Signer<'info>,
+
+    #[account(has_one = owner @ Errores::NoOwner)]
+    pub registro: Account<'info, Registro>,
+
+    #[account(
+        mut,
+        seeds = [b"cliente", registro.key().as_ref(), id_cliente.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub cliente: Account<'info, Cliente>,
+}
+
+#[derive(Accounts)]
+#[instruction(id_cliente: u16)]
+pub struct CerrarCliente<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(mut, has_one = owner @ Errores::NoOwner)]
+    pub registro: Account<'info, Registro>,
+
+    #[account(
+        mut,
+        close = owner,
+        seeds = [b"cliente", registro.key().as_ref(), id_cliente.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub cliente: Account<'info, Cliente>,
+}
+
+#[derive(Accounts)]
+#[instruction(id_cliente: u16, sku: String)]
+pub struct NuevaVenta<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(has_one = owner @ Errores::NoOwner)]
+    pub registro: Account<'info, Registro>,
+
+    #[account(
+        mut,
+        seeds = [b"cliente", registro.key().as_ref(), id_cliente.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub cliente: Account<'info, Cliente>,
+
+    #[account(
+        init,
+        payer = owner,
+        space = Venta::INIT_SPACE + 8,
+        seeds = [b"venta", cliente.key().as_ref(), sku.as_bytes()],
+        bump
+    )]
+    pub venta: Account<'info, Venta>,
+
+    #[account(
+        mut,
+        seeds = [b"producto", registro.key().as_ref(), sku.as_bytes()],
+        bump
+    )]
+    pub producto: Account<'info, Producto>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(id_cliente: u16, sku: String)]
+pub struct ModificarVenta<'info> {
+    pub owner: Signer<'info>,
+
+    #[account(has_one = owner @ Errores::NoOwner)]
+    pub registro: Account<'info, Registro>,
+
+    #[account(
+        seeds = [b"cliente", registro.key().as_ref(), id_cliente.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub cliente: Account<'info, Cliente>,
+
+    #[account(
+        mut,
+        seeds = [b"venta", cliente.key().as_ref(), sku.as_bytes()],
+        bump
+    )]
+    pub venta: Account<'info, Venta>,
+}
+
+#[derive(Accounts)]
+#[instruction(id_cliente: u16, sku: String)]
+pub struct EliminarVenta<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(has_one = owner @ Errores::NoOwner)]
+    pub registro: Account<'info, Registro>,
+
+    #[account(
+        mut,
+        seeds = [b"cliente", registro.key().as_ref(), id_cliente.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub cliente: Account<'info, Cliente>,
+
+    #[account(
+        mut,
+        close = owner,
+        seeds = [b"venta", cliente.key().as_ref(), sku.as_bytes()],
+        bump
+    )]
+    pub venta: Account<'info, Venta>,
+
+    #[account(
+        mut,
+        seeds = [b"producto", registro.key().as_ref(), sku.as_bytes()],
+        bump
+    )]
+    pub producto: Account<'info, Producto>,
+}
